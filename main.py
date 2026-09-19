@@ -10,6 +10,7 @@ def home():
 
 @app.route("/ocr", methods=["POST"])
 def process_ocr():
+    
     try:
         if "file" not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
