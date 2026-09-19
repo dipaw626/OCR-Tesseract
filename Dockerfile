@@ -5,12 +5,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install Poppler & OpenCV Dependencies
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-        poppler-utils \
-        libgl1-mesa-glx \
-        libglib2.0-0 && \
+        tesseract-ocr \
+        tesseract-ocr-ind \
+        poppler-utils && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -24,4 +23,4 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["gunicorn", "app:app", "--workers", "1", "--threads", "1", "--timeout", "180", "--bind", "0.0.0.0:8080"]
+CMD ["gunicorn", "app:app", "--workers", "2", "--threads", "2", "--timeout", "120", "--bind", "0.0.0.0:8080"]
