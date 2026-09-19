@@ -11,7 +11,11 @@ import gc
 app = Flask(__name__)
 
 # Inisialisasi PaddleOCR (use_angle_cls sudah menangani orientasi teks)
-ocr = PaddleOCR(use_angle_cls=True, lang='id')
+ocr = PaddleOCR(
+    ocr_version='PP-OCRv4', # Kunci ke versi v4 yang jauh lebih hemat RAM dibanding v6
+    use_angle_cls=False,    # Matikan angle classifier (menghemat 2 model berat UVDoc & PP-LCNet)
+    lang='id'
+)
 
 def parse_paddle_result(result):
     """
