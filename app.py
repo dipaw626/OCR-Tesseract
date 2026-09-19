@@ -5,34 +5,50 @@ import docx
 import io
 from PIL import Image, ImageEnhance, ImageFilter
 import sys
+import gc
 
 app = Flask(__name__)
 
 def preprocess_image(image):
-    # Convert ke Grayscale & naikkan kontras agar teks tabel lebih tajam bagi Tesseract
-    image = image.convert("L")
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(2.0)
-    return image
+    # 1. Ubah ke Grayscale
+    gray = image.convert("L")
+    
+    # 2. Pertajam tepi huruf (membantu membaca _, $, dan teks kecil)
+    sharpened = gray.filter(ImageFilter.SHARPEN)
+    
+    # 3. Kontras 1.5x (Jangan 2.0x agar piksel tipis pada huruf tidak hancur)
+    enhancer = ImageEnhance.Contrast(sharpened)
+    return enhancer.enhance(1.5)
 
 def extract_from_pdf(pdf_bytes):
-    images = convert_from_bytes(pdf_bytes, dpi=200)
+    # DPI 300 adalah standar wajib OCR agar simbol spesifik tidak terlewat
+    images = convert_from_bytes(pdf_bytes, dpi=300)
     full_text = []
+    
+    # --oem 3 : Pakai engine LSTM (Deep Learning Tesseract)
+    # --psm 6 : Membaca halaman sebagai satu blok teks rata (mencegah teks lompat halaman)
+    custom_config = r'--oem 3 --psm 6'
     
     for i, img in enumerate(images):
         processed_img = preprocess_image(img)
+        
         try:
-            text = pytesseract.image_to_string(processed_img, lang="ind+eng")
+            text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=custom_config)
         except Exception:
-            text = pytesseract.image_to_string(processed_img, lang="eng")
+            text = pytesseract.image_to_string(processed_img, lang="eng", config=custom_config)
             
         full_text.append(f"--- [HALAMAN {i+1}] ---\n{text}")
+        
+        # Cegah OOM di Railway: Hapus image object dari RAM setelah di-OCR
+        del img
+        del processed_img
+        gc.collect()
         
     return "\n\n".join(full_text), len(images)
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "Tesseract Multi-Format Service Active"})
+    return jsonify({"status": "Optimized Tesseract Multi-Format Active"})
 
 @app.route("/ocr", methods=["POST"])
 def process_ocr():
@@ -44,12 +60,14 @@ def process_ocr():
         filename = file.filename.lower()
         file_bytes = file.read()
 
+        custom_config = r'--oem 3 --psm 6'
+
         if filename.endswith(".pdf"):
             extracted_text, total_pages = extract_from_pdf(file_bytes)
         elif filename.endswith((".png", ".jpg", ".jpeg")):
             img = Image.open(io.BytesIO(file_bytes))
             processed_img = preprocess_image(img)
-            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng")
+            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=custom_config)
             total_pages = 1
         elif filename.endswith(".docx"):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -57,6 +75,9 @@ def process_ocr():
             total_pages = 1
         else:
             return jsonify({"success": False, "error": "Format file tidak didukung"}), 400
+
+        # Panggil Garbage Collector untuk endpoint utama
+        gc.collect()
 
         return jsonify({
             "success": True,
