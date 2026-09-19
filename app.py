@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
-import pytesseract
+from paddleocr import PaddleOCR
 from pdf2image import convert_from_bytes
 import docx
 import io
-import cv2
 import numpy as np
 from PIL import Image
 import sys
@@ -11,37 +10,49 @@ import gc
 
 app = Flask(__name__)
 
-def preprocess_image_advanced(pil_image):
-    open_cv_image = np.array(pil_image.convert("RGB"))
-    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return Image.fromarray(thresh)
+# Inisialisasi PaddleOCR sekali saja di tingkat global (bahasa Indonesia & Inggris)
+# use_gpu=False agar aman berjalan di CPU Railway
+ocr = PaddleOCR(use_angle_cls=True, lang='id', use_gpu=False, show_log=False)
 
 def extract_from_pdf(pdf_bytes):
-    images = convert_from_bytes(pdf_bytes, dpi=300)
+    # Gunakan DPI 200 agar seimbang antara akurasi dan penggunaan RAM
+    images = convert_from_bytes(pdf_bytes, dpi=200)
     full_text = []
-    custom_config = r'--oem 3 --psm 6'
     
     for i, img in enumerate(images):
-        processed_img = preprocess_image_advanced(img)
-        try:
-            text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=custom_config)
-        except Exception:
-            text = pytesseract.image_to_string(processed_img, lang="eng", config=custom_config)
-            
-        full_text.append(f"--- [HALAMAN {i+1}] ---\n{text}")
+        img_np = np.array(img.convert("RGB"))
+        result = ocr.ocr(img_np, cls=True)
         
-        # Free memory gambar yang sudah di-OCR
+        page_lines = []
+        if result and result[0]:
+            for line in result[0]:
+                # line[1][0] berisi string teks hasil ekstraksi
+                text_content = line[1][0]
+                page_lines.append(text_content)
+                
+        full_text.append(f"--- [HALAMAN {i+1}] ---\n" + "\n".join(page_lines))
+        
         del img
-        del processed_img
+        del img_np
         gc.collect()
         
     return "\n\n".join(full_text), len(images)
 
+def extract_from_image(file_bytes):
+    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    img_np = np.array(img)
+    result = ocr.ocr(img_np, cls=True)
+    
+    page_lines = []
+    if result and result[0]:
+        for line in result[0]:
+            page_lines.append(line[1][0])
+            
+    return "\n".join(page_lines)
+
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "Optimized Tesseract Active"})
+    return jsonify({"status": "PaddleOCR Multi-Format Service Active"})
 
 @app.route("/ocr", methods=["POST"])
 def process_ocr():
@@ -56,9 +67,7 @@ def process_ocr():
         if filename.endswith(".pdf"):
             extracted_text, total_pages = extract_from_pdf(file_bytes)
         elif filename.endswith((".png", ".jpg", ".jpeg")):
-            img = Image.open(io.BytesIO(file_bytes))
-            processed_img = preprocess_image_advanced(img)
-            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=r'--oem 3 --psm 6')
+            extracted_text = extract_from_image(file_bytes)
             total_pages = 1
         elif filename.endswith(".docx"):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -66,6 +75,8 @@ def process_ocr():
             total_pages = 1
         else:
             return jsonify({"success": False, "error": "Format file tidak didukung"}), 400
+
+        gc.collect()
 
         return jsonify({
             "success": True,
