@@ -10,12 +10,10 @@ import gc
 
 app = Flask(__name__)
 
-# Inisialisasi PaddleOCR sekali saja di tingkat global (bahasa Indonesia & Inggris)
-# use_gpu=False agar aman berjalan di CPU Railway
-ocr = PaddleOCR(use_angle_cls=True, lang='id', use_gpu=False, show_log=False)
+# Inisialisasi PaddleOCR yang kompatibel dengan versi terbaru
+ocr = PaddleOCR(use_angle_cls=True, lang='id')
 
 def extract_from_pdf(pdf_bytes):
-    # Gunakan DPI 200 agar seimbang antara akurasi dan penggunaan RAM
     images = convert_from_bytes(pdf_bytes, dpi=200)
     full_text = []
     
@@ -26,9 +24,7 @@ def extract_from_pdf(pdf_bytes):
         page_lines = []
         if result and result[0]:
             for line in result[0]:
-                # line[1][0] berisi string teks hasil ekstraksi
-                text_content = line[1][0]
-                page_lines.append(text_content)
+                page_lines.append(line[1][0])
                 
         full_text.append(f"--- [HALAMAN {i+1}] ---\n" + "\n".join(page_lines))
         
