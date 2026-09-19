@@ -3,36 +3,45 @@ import pytesseract
 from pdf2image import convert_from_bytes
 import docx
 import io
-from PIL import Image, ImageEnhance, ImageFilter
+import cv2
+import numpy as np
+from PIL import Image
 import sys
+import gc
 
 app = Flask(__name__)
 
-def preprocess_image(image):
-    # Convert ke Grayscale & naikkan kontras agar teks tabel lebih tajam bagi Tesseract
-    image = image.convert("L")
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(2.0)
-    return image
+def preprocess_image_advanced(pil_image):
+    open_cv_image = np.array(pil_image.convert("RGB"))
+    gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(thresh)
 
 def extract_from_pdf(pdf_bytes):
-    images = convert_from_bytes(pdf_bytes, dpi=200)
+    images = convert_from_bytes(pdf_bytes, dpi=300)
     full_text = []
+    custom_config = r'--oem 3 --psm 6'
     
     for i, img in enumerate(images):
-        processed_img = preprocess_image(img)
+        processed_img = preprocess_image_advanced(img)
         try:
-            text = pytesseract.image_to_string(processed_img, lang="ind+eng")
+            text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=custom_config)
         except Exception:
-            text = pytesseract.image_to_string(processed_img, lang="eng")
+            text = pytesseract.image_to_string(processed_img, lang="eng", config=custom_config)
             
         full_text.append(f"--- [HALAMAN {i+1}] ---\n{text}")
+        
+        # Free memory gambar yang sudah di-OCR
+        del img
+        del processed_img
+        gc.collect()
         
     return "\n\n".join(full_text), len(images)
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "Tesseract Multi-Format Service Active"})
+    return jsonify({"status": "Optimized Tesseract Active"})
 
 @app.route("/ocr", methods=["POST"])
 def process_ocr():
@@ -48,8 +57,8 @@ def process_ocr():
             extracted_text, total_pages = extract_from_pdf(file_bytes)
         elif filename.endswith((".png", ".jpg", ".jpeg")):
             img = Image.open(io.BytesIO(file_bytes))
-            processed_img = preprocess_image(img)
-            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng")
+            processed_img = preprocess_image_advanced(img)
+            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng", config=r'--oem 3 --psm 6')
             total_pages = 1
         elif filename.endswith(".docx"):
             doc = docx.Document(io.BytesIO(file_bytes))
