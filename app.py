@@ -6,7 +6,7 @@ import shutil
 import sys
 
 app = Flask(__name__)
-
+ 
 # 1. Cari binary tesseract secara otomatis di sistem
 tesseract_bin = shutil.which("tesseract")
 
