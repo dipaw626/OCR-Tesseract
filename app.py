@@ -6,32 +6,36 @@ import io
 import numpy as np
 from PIL import Image
 import sys
+import gc
 
 app = Flask(__name__)
 
-# Load Reader sekali saat startup agar tidak berat di setiap request
-# ['id', 'en'] mendukun bahasa Indonesia & Inggris
-reader = easyocr.Reader(['id', 'en'], gpu=False)
+# Variabel global untuk menyimpan model
+reader = None
 
-def extract_from_image(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    image_np = np.array(image)
-    result = reader.readtext(image_np, detail=0)
-    return "\n".join(result)
+def get_reader():
+    global reader
+    if reader is None:
+        # Load model secara on-demand saat ada request masuk
+        # Disable model quant/detection berat jika tidak perlu
+        reader = easyocr.Reader(['id', 'en'], gpu=False)
+    return reader
 
 def extract_from_pdf(pdf_bytes):
-    images = convert_from_bytes(pdf_bytes)
+    ocr = get_reader()
+    images = convert_from_bytes(pdf_bytes, dpi=150) # Kurangi DPI ke 150 agar hemat RAM!
     full_text = []
+    
     for i, image in enumerate(images):
         image_np = np.array(image)
-        lines = reader.readtext(image_np, detail=0)
+        lines = ocr.readtext(image_np, detail=0)
         full_text.append(f"--- [HALAMAN {i+1}] ---\n" + "\n".join(lines))
+        
+        # Free memory tiap halaman
+        del image_np
+        gc.collect()
+        
     return "\n\n".join(full_text), len(images)
-
-def extract_from_docx(docx_bytes):
-    doc = docx.Document(io.BytesIO(docx_bytes))
-    full_text = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n".join(full_text)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -47,18 +51,23 @@ def process_ocr():
         filename = file.filename.lower()
         file_bytes = file.read()
 
-        extracted_text = ""
-        total_pages = 1
-
-        # Handling Multi-Format File
         if filename.endswith(".pdf"):
             extracted_text, total_pages = extract_from_pdf(file_bytes)
         elif filename.endswith((".png", ".jpg", ".jpeg")):
-            extracted_text = extract_from_image(file_bytes)
+            ocr = get_reader()
+            image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            lines = ocr.readtext(np.array(image), detail=0)
+            extracted_text = "\n".join(lines)
+            total_pages = 1
         elif filename.endswith(".docx"):
-            extracted_text = extract_from_docx(file_bytes)
+            doc = docx.Document(io.BytesIO(file_bytes))
+            extracted_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            total_pages = 1
         else:
-            return jsonify({"success": False, "error": "Format file tidak didukung (.pdf, .png, .jpg, .docx)"}), 400
+            return jsonify({"success": False, "error": "Format file tidak didukung"}), 400
+
+        # Panggil Garbage Collector untuk melepas RAM
+        gc.collect()
 
         return jsonify({
             "success": True,
