@@ -10,8 +10,33 @@ import gc
 
 app = Flask(__name__)
 
-# Inisialisasi PaddleOCR yang kompatibel dengan versi terbaru
+# Inisialisasi PaddleOCR (use_angle_cls sudah menangani orientasi teks)
 ocr = PaddleOCR(use_angle_cls=True, lang='id')
+
+def parse_paddle_result(result):
+    """
+    Fungsi pembantu untuk mengekstrak string teks dari output PaddleOCR v3 / v2
+    """
+    page_lines = []
+    if not result:
+        return ""
+
+    for line in result:
+        if not line:
+            continue
+        # Format PaddleOCR: [ [ [box_coords], (text, confidence) ], ... ]
+        for item in line:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                # Jika elemen kedua adalah tuple (text, confidence)
+                if isinstance(item[1], (list, tuple)):
+                    page_lines.append(str(item[1][0]))
+                # Format objek/dict jika menggunakan PaddleX pipeline
+                elif hasattr(item[1], "text"):
+                    page_lines.append(str(item[1].text))
+            elif isinstance(item, str):
+                page_lines.append(item)
+                
+    return "\n".join(page_lines)
 
 def extract_from_pdf(pdf_bytes):
     images = convert_from_bytes(pdf_bytes, dpi=200)
@@ -19,14 +44,12 @@ def extract_from_pdf(pdf_bytes):
     
     for i, img in enumerate(images):
         img_np = np.array(img.convert("RGB"))
-        result = ocr.ocr(img_np, cls=True)
         
-        page_lines = []
-        if result and result[0]:
-            for line in result[0]:
-                page_lines.append(line[1][0])
-                
-        full_text.append(f"--- [HALAMAN {i+1}] ---\n" + "\n".join(page_lines))
+        # HAPUS cls=True di sini!
+        result = ocr.ocr(img_np)
+        
+        extracted_page_text = parse_paddle_result(result)
+        full_text.append(f"--- [HALAMAN {i+1}] ---\n{extracted_page_text}")
         
         del img
         del img_np
@@ -37,14 +60,11 @@ def extract_from_pdf(pdf_bytes):
 def extract_from_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     img_np = np.array(img)
-    result = ocr.ocr(img_np, cls=True)
     
-    page_lines = []
-    if result and result[0]:
-        for line in result[0]:
-            page_lines.append(line[1][0])
-            
-    return "\n".join(page_lines)
+    # HAPUS cls=True di sini!
+    result = ocr.ocr(img_np)
+    
+    return parse_paddle_result(result)
 
 @app.route("/", methods=["GET"])
 def home():
