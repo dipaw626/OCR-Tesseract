@@ -1,78 +1,38 @@
 from flask import Flask, request, jsonify
-from paddleocr import PaddleOCR
+import pytesseract
 from pdf2image import convert_from_bytes
 import docx
 import io
-import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import sys
-import gc
 
 app = Flask(__name__)
 
-# Inisialisasi PaddleOCR (use_angle_cls sudah menangani orientasi teks)
-ocr = PaddleOCR(
-    ocr_version='PP-OCRv4', # Kunci ke versi v4 yang jauh lebih hemat RAM dibanding v6
-    use_angle_cls=False,    # Matikan angle classifier (menghemat 2 model berat UVDoc & PP-LCNet)
-    lang='en'
-)
-
-def parse_paddle_result(result):
-    """
-    Fungsi pembantu untuk mengekstrak string teks dari output PaddleOCR v3 / v2
-    """
-    page_lines = []
-    if not result:
-        return ""
-
-    for line in result:
-        if not line:
-            continue
-        # Format PaddleOCR: [ [ [box_coords], (text, confidence) ], ... ]
-        for item in line:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                # Jika elemen kedua adalah tuple (text, confidence)
-                if isinstance(item[1], (list, tuple)):
-                    page_lines.append(str(item[1][0]))
-                # Format objek/dict jika menggunakan PaddleX pipeline
-                elif hasattr(item[1], "text"):
-                    page_lines.append(str(item[1].text))
-            elif isinstance(item, str):
-                page_lines.append(item)
-                
-    return "\n".join(page_lines)
+def preprocess_image(image):
+    # Convert ke Grayscale & naikkan kontras agar teks tabel lebih tajam bagi Tesseract
+    image = image.convert("L")
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2.0)
+    return image
 
 def extract_from_pdf(pdf_bytes):
     images = convert_from_bytes(pdf_bytes, dpi=200)
     full_text = []
     
     for i, img in enumerate(images):
-        img_np = np.array(img.convert("RGB"))
-        
-        # HAPUS cls=True di sini!
-        result = ocr.ocr(img_np)
-        
-        extracted_page_text = parse_paddle_result(result)
-        full_text.append(f"--- [HALAMAN {i+1}] ---\n{extracted_page_text}")
-        
-        del img
-        del img_np
-        gc.collect()
+        processed_img = preprocess_image(img)
+        try:
+            text = pytesseract.image_to_string(processed_img, lang="ind+eng")
+        except Exception:
+            text = pytesseract.image_to_string(processed_img, lang="eng")
+            
+        full_text.append(f"--- [HALAMAN {i+1}] ---\n{text}")
         
     return "\n\n".join(full_text), len(images)
 
-def extract_from_image(file_bytes):
-    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    img_np = np.array(img)
-    
-    # HAPUS cls=True di sini!
-    result = ocr.ocr(img_np)
-    
-    return parse_paddle_result(result)
-
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "PaddleOCR Multi-Format Service Active"})
+    return jsonify({"status": "Tesseract Multi-Format Service Active"})
 
 @app.route("/ocr", methods=["POST"])
 def process_ocr():
@@ -87,7 +47,9 @@ def process_ocr():
         if filename.endswith(".pdf"):
             extracted_text, total_pages = extract_from_pdf(file_bytes)
         elif filename.endswith((".png", ".jpg", ".jpeg")):
-            extracted_text = extract_from_image(file_bytes)
+            img = Image.open(io.BytesIO(file_bytes))
+            processed_img = preprocess_image(img)
+            extracted_text = pytesseract.image_to_string(processed_img, lang="ind+eng")
             total_pages = 1
         elif filename.endswith(".docx"):
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -95,8 +57,6 @@ def process_ocr():
             total_pages = 1
         else:
             return jsonify({"success": False, "error": "Format file tidak didukung"}), 400
-
-        gc.collect()
 
         return jsonify({
             "success": True,
