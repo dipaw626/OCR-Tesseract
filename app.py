@@ -20,23 +20,18 @@ def advanced_preprocess_image(pil_img: Image.Image) -> Image.Image:
     2. Resizing / Upscaling jika resolusi gambar rendah.
     3. Denoising & Adaptive Thresholding via OpenCV.
     """
-    # 1. Autofix orientasi EXIF dari kamera HP
     pil_img = ImageOps.exif_transpose(pil_img)
 
-    # Convert PIL ke OpenCV Format (RGB -> GRAY)
     open_cv_image = np.array(pil_img.convert("RGB"))
     gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
 
     height, width = gray.shape[:2]
 
-    # 2. Resizing/Upscaling jika gambar terlalu kecil (DPI Rendah)
     if height < 1000 or width < 1000:
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
-    # 3. Denoising untuk menghilangkan bintik-bintik hasil scan
     denoised = cv2.fastNlMeansDenoising(gray, h=10, searchWindowSize=21, templateWindowSize=7)
 
-    # 4. Adaptive Thresholding (Memisahkan teks tipis dari background)
     binary_img = cv2.adaptiveThreshold(
         denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
     )
@@ -46,71 +41,77 @@ def advanced_preprocess_image(pil_img: Image.Image) -> Image.Image:
 
 def advanced_regex_cleaner(text: str) -> str:
     """
-    Cleans OCR Text Noise (Header Logos, Footers, and CamScanner Watermarks)
-    using Intelligent Regex Pattern Matching.
+    Preservation-First Regex Cleaner:
+    1. Jika menemukan 'FORMULIR PENDAFTARAN', potong SEMUA baris di atasnya (buang logo header).
+    2. Jika menemukan 'KETENTUAN PEMBATALAN', ambil sampai batas akhir poin ketentuan/catatan NPWP,
+       lalu potong footer kontak & watermark di bawahnya.
+    3. Jika tidak menemukan anchor, bersihkan noise footer/watermark secara aman.
     """
     if not text:
         return ""
 
     lines = text.splitlines()
-    cleaned_lines = []
 
-    # Flag untuk membuang baris header logo acak di bagian atas halaman
-    # Header dianggap selesai jika menemukan Kata Kunci Utama Dokumen
-    main_content_started = False
-    header_anchor_keywords = [
-        r"FORMULIR\s+PENDAFTARAN",
-        r"KETENTUAN\s+PEMBATALAN",
-        r"DAFTAR\s+PESERTA",
-        r"TOPIK\s+PELATIHAN",
-        r"BIODATA\s+PESERTA"
+    # --- ATURAN 1: POTONG TEKS DI ATAS "FORMULIR PENDAFTARAN" ---
+    top_anchor_pattern = r"FORMULIR\s+PENDAFTARAN"
+    top_anchor_idx = -1
+
+    for idx, line in enumerate(lines):
+        if re.search(top_anchor_pattern, line, re.IGNORECASE):
+            top_anchor_idx = idx
+            break
+
+    # Jika ketemu 'FORMULIR PENDAFTARAN', buang semua baris di atasnya
+    if top_anchor_idx != -1:
+        lines = lines[top_anchor_idx:]
+
+    # --- ATURAN 2: POTONG FOOTER DI BAWAH "KETENTUAN PEMBATALAN" / CATATAN NPWP ---
+    # Kita cari titik hentinya (misal setelah catatan NPWP / pengiriman)
+    bottom_stop_patterns = [
+        r"(?i)mohon\s+dikirimkan\s+softcopy\s+npwp",
+        r"(?i)pengiriman\s+formulir,\s+npwp",
+        r"(?i)tanda\s+tangan\s+&\s+nama\s+terang"
     ]
+    
+    bottom_stop_idx = -1
+    # Hanya cari stop pattern jika halaman ini mengandung "KETENTUAN PEMBATALAN"
+    has_ketentuan = any(re.search(r"KETENTUAN\s+PEMBATALAN", line, re.IGNORECASE) for line in lines)
+    
+    if has_ketentuan:
+        for idx, line in enumerate(lines):
+            for stop_pat in bottom_stop_patterns:
+                if re.search(stop_pat, line):
+                    bottom_stop_idx = idx
+                    break
+            if bottom_stop_idx != -1:
+                break
 
-    # Pattern untuk mengidentifikasi noise spesifik (Header / Footer)
+    # Jika ketemu batas bawah di halaman Ketentuan Pembatalan, potong footer di bawahnya (+1 baris toleransi)
+    if bottom_stop_idx != -1:
+        lines = lines[:bottom_stop_idx + 2]
+
+    # --- ATURAN 3: PEMBERSIHAN FOOTER STANDARD (Watermark, Link, No HP Footer) ---
     noise_patterns = [
         r"(?i)our\s+partner",
-        r"(?i)project\s+management",
-        r"(?i)training\s+&\s+consulting",
         r"(?i)dipindai\s+dengan\s+camscanner",
         r"(?i)scanned\s+with\s+camscanner",
         r"(?i)komplek\s+perum\s+puri\s+gentan",
         r"(?i)jalan\s+kaliurang",
-        r"(?i)https?://[^\s]+",  # Hapus URL di footer
+        r"(?i)https?://[^\s]+",
         r"mail@expertindo-training\.com",
         r"expertindotraining@gmail\.com",
     ]
 
+    cleaned_lines = []
     for line in lines:
         stripped_line = line.strip()
-
-        # 1. Cek apakah baris ini adalah "Anchor Title" utama
-        if not main_content_started:
-            for anchor in header_anchor_keywords:
-                if re.search(anchor, stripped_line, re.IGNORECASE):
-                    main_content_started = True
-                    break
-
-        # Jika konten utama belum dimulai, dan baris ini terindikasi noise header/logo -> SKIP
-        if not main_content_started:
-            # Skip baris yang mengandung keyword logo/header
-            if any(re.search(pat, stripped_line) for pat in noise_patterns):
-                continue
-            # Skip baris yang hanya berisi simbol/karakter acak hasil OCR logo (misal: ". AN — = ")
-            alphanumeric_chars = re.sub(r'[^a-zA-Z0-9]', '', stripped_line)
-            if len(alphanumeric_chars) < 3:
-                continue
-
-        # 2. Cek Noise Footer & Watermark (berlaku untuk seluruh baris)
-        is_footer_noise = False
-        for pat in noise_patterns:
-            if re.search(pat, stripped_line):
-                is_footer_noise = True
-                break
-
-        if is_footer_noise:
+        if not stripped_line:
             continue
 
-        # Simpan baris yang bersih
+        # Skip baris yang cocok dengan noise pattern
+        if any(re.search(pat, stripped_line) for pat in noise_patterns):
+            continue
+
         cleaned_lines.append(line)
 
     return "\n".join(cleaned_lines).strip()
