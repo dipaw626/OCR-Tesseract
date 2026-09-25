@@ -45,63 +45,56 @@ def advanced_preprocess_image(pil_img: Image.Image) -> Image.Image:
 
 
 def extract_from_pdf(pdf_bytes: bytes) -> tuple[str, int, str]:
-    # --- LANGKAH 1: Native Extraction via pypdf ---
-    try:
-        pdf_file = io.BytesIO(pdf_bytes)
-        reader = PdfReader(pdf_file)
-        native_pages = []
-        total_native_chars = 0
-
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
-            text_cleaned = text.strip()
-            total_native_chars += len(text_cleaned)
-            native_pages.append(f"--- [HALAMAN {i+1}] ---\n{text_cleaned}")
-
-        if total_native_chars > 50:
-            return "\n\n".join(native_pages), len(reader.pages), "pypdf_native"
-
-    except Exception as e:
-        print(f"--> Native PDF Extraction Bypass: {str(e)}", file=sys.stderr)
-
-    # --- LANGKAH 2: Fallback Stream OCR (300 DPI Page-by-Page) ---
-    info = pdfinfo_from_bytes(pdf_bytes)
-    total_pages = info.get("Pages", 1)
+    pdf_file = io.BytesIO(pdf_bytes)
+    reader = PdfReader(pdf_file)
+    total_pages = len(reader.pages)
+    
     full_text = []
-
-    # Omit PSM/OEM config bawaan & set OMP_THREAD_LIMIT via env
+    methods_used = set()
+    
     custom_config = r'--oem 3 --psm 6'
 
-    for page_num in range(1, total_pages + 1):
-        # Gunakan 300 DPI per halaman tunggal untuk mencegah OOM Spike
-        images = convert_from_bytes(
-            pdf_bytes,
-            dpi=300,
-            first_page=page_num,
-            last_page=page_num
-        )
-        if not images:
-            continue
-
-        img = images[0]
-        processed_img = advanced_preprocess_image(img)
-
-        try:
-            text = pytesseract.image_to_string(
-                processed_img, lang="ind+eng", config=custom_config
+    for i, page in enumerate(reader.pages):
+        page_num = i + 1
+        native_text = (page.extract_text() or "").strip()
+        
+        # SEYARAT: Jika halaman ini punya teks digital > 30 karakter,
+        # gunakan Native Extraction (Tanpa OCR, Hemat CPU/RAM)
+        if len(native_text) > 30:
+            full_text.append(f"--- [HALAMAN {page_num}] ---\n{native_text}")
+            methods_used.add("pypdf_native")
+        else:
+            # JIKA HALAMAN INI SCAN/GAMBAR: Fallback ke Tesseract OCR HANYA untuk halaman ini
+            methods_used.add("tesseract_ocr")
+            
+            # Convert HANYA halaman ini ke gambar (300 DPI)
+            images = convert_from_bytes(
+                pdf_bytes,
+                dpi=300,
+                first_page=page_num,
+                last_page=page_num
             )
-        except pytesseract.TesseractError:
-            text = pytesseract.image_to_string(
-                processed_img, lang="eng", config=custom_config
-            )
+            
+            if images:
+                img = images[0]
+                processed_img = advanced_preprocess_image(img)
+                
+                try:
+                    ocr_text = pytesseract.image_to_string(
+                        processed_img, lang="ind+eng", config=custom_config
+                    )
+                except pytesseract.TesseractError:
+                    ocr_text = pytesseract.image_to_string(
+                        processed_img, lang="eng", config=custom_config
+                    )
+                
+                full_text.append(f"--- [HALAMAN {page_num}] ---\n{ocr_text.strip()}")
+                
+                del img, processed_img, images
+                gc.collect()
 
-        full_text.append(f"--- [HALAMAN {page_num}] ---\n{text}")
-
-        # Strict Cleanup Memori Per Halaman
-        del img, processed_img, images
-        gc.collect()
-
-    return "\n\n".join(full_text), total_pages, "tesseract_ocr"
+    final_method = "+".join(sorted(methods_used))
+    return "\n\n".join(full_text), total_pages, final_method
 
 
 @app.route("/", methods=["GET"])
