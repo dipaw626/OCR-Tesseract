@@ -42,22 +42,23 @@ def advanced_preprocess_image(pil_img: Image.Image) -> Image.Image:
 def advanced_regex_cleaner(text: str) -> str:
     """
     Preservation-First Regex Cleaner:
-    1. POTONG HEADER LOGO: Cari 'FORMULIR PENDAFTARAN' atau 'KETENTUAN PEMBATALAN'.
-       Buang SEMUA baris di atasnya.
-    2. POTONG FOOTER KETENTUAN: Di halaman Ketentuan Pembatalan, potong SEMUA baris
-       setelah 'Tanda Tangan & Nama Terang' atau 'NPWP'.
-    3. CLEANUP NOISE: Hapus watermark CamScanner & URL footer.
+    1. DROP SELURUH HALAMAN: Jika halaman mengandung 'KETENTUAN PEMBATALAN', return "" (KOSONG).
+    2. POTONG HEADER LOGO: Untuk halaman utama (misal 'FORMULIR PENDAFTARAN'),
+       potong SEMUA baris/logo acak di atas judul tersebut.
+    3. CLEANUP NOISE: Hapus watermark CamScanner & URL footer pada halaman tersisa.
     """
     if not text:
         return ""
 
+    # --- LANGKAH 1: IF PAGE CONTAINS 'KETENTUAN PEMBATALAN' -> DROP 100% ---
+    if re.search(r"KETENTUAN\s+PEMBATALAN", text, re.IGNORECASE):
+        return "[HALAMAN KETENTUAN PEMBATALAN DIABAIKAN]"
+
     lines = text.splitlines()
 
-    # --- LANGKAH 1: POTONG LOGO / HEADER DI ATAS FORMULIR & KETENTUAN ---
-    # HANYA gunakan anchor header yang posisinya DIJAMIN paling atas halaman!
+    # --- LANGKAH 2: POTONG LOGO / HEADER DI ATAS FORMULIR PENDAFTARAN ---
     top_header_anchors = [
-        r"FORMULIR\s+PENDAFTARAN",
-        r"KETENTUAN\s+PEMBATALAN"
+        r"FORMULIR\s+PENDAFTARAN"
     ]
 
     top_anchor_idx = -1
@@ -69,35 +70,11 @@ def advanced_regex_cleaner(text: str) -> str:
         if top_anchor_idx != -1:
             break
 
-    # Potong semua baris/logo di atas judul utama
+    # Potong semua baris/logo di atas 'FORMULIR PENDAFTARAN'
     if top_anchor_idx != -1:
         lines = lines[top_anchor_idx:]
 
-    # --- LANGKAH 2: KHUSUS KETENTUAN PEMBATALAN -> POTONG TEKS DI BAWAHNYA ---
-    has_ketentuan = any(re.search(r"KETENTUAN\s+PEMBATALAN", line, re.IGNORECASE) for line in lines)
-
-    if has_ketentuan:
-        bottom_stop_patterns = [
-            r"(?i)softcopy\s+npwp",
-            r"(?i)tanda\s+tangan",
-            r"(?i)pengiriman\s+formulir"
-        ]
-
-        bottom_stop_idx = -1
-        for idx, line in enumerate(lines):
-            for stop_pat in bottom_stop_patterns:
-                if re.search(stop_pat, line):
-                    bottom_stop_idx = idx
-                    break
-            if bottom_stop_idx != -1:
-                break
-
-        # Jika ketemu kata penutup di halaman Ketentuan, simpan sampai baris tersebut + 1 toleransi,
-        # buang semua teks di bawahnya (seperti watermark CamScanner & footer info)
-        if bottom_stop_idx != -1:
-            lines = lines[:bottom_stop_idx + 2]
-
-    # --- LANGKAH 3: PEMBERSIHAN FOOTER STANDARD (Sisa-sisa URL & Watermark) ---
+    # --- LANGKAH 3: PEMBERSIHAN FOOTER STANDARD (Watermark & URL Footer) ---
     noise_patterns = [
         r"(?i)our\s+partner",
         r"(?i)dipindai\s+dengan\s+camscanner",
