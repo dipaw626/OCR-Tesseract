@@ -42,41 +42,48 @@ def advanced_preprocess_image(pil_img: Image.Image) -> Image.Image:
 def advanced_regex_cleaner(text: str) -> str:
     """
     Preservation-First Regex Cleaner:
-    1. Jika menemukan 'FORMULIR PENDAFTARAN', potong SEMUA baris di atasnya (buang logo header).
-    2. Jika menemukan 'KETENTUAN PEMBATALAN', ambil sampai batas akhir poin ketentuan/catatan NPWP,
-       lalu potong footer kontak & watermark di bawahnya.
-    3. Jika tidak menemukan anchor, bersihkan noise footer/watermark secara aman.
+    1. POTONG HEADER: Cari judul utama halaman (FORMULIR PENDAFTARAN / KETENTUAN PEMBATALAN / DAFTAR PESERTA).
+       Semua teks/logo di atas judul tersebut DIBUANG 100% per halaman.
+    2. POTONG FOOTER: Di halaman 'KETENTUAN PEMBATALAN', potong teks setelah catatan NPWP.
+    3. PEMBERSIHAN FOOTER STANDARD: Hapus watermark CamScanner & URL footer secara aman.
     """
     if not text:
         return ""
 
     lines = text.splitlines()
 
-    # --- ATURAN 1: POTONG TEKS DI ATAS "FORMULIR PENDAFTARAN" ---
-    top_anchor_pattern = r"FORMULIR\s+PENDAFTARAN"
-    top_anchor_idx = -1
+    # --- ATURAN 1: POTONG TEKS DI ATAS JUDUL UTAMA HALAMAN (HEADER ANCHORS) ---
+    # Menambahkan KETENTUAN PEMBATALAN & DAFTAR PESERTA agar Halaman 2 & 3 ikut terpotong logonya
+    top_anchor_patterns = [
+        r"FORMULIR\s+PENDAFTARAN",
+        r"KETENTUAN\s+PEMBATALAN",
+        r"DAFTAR\s+PESERTA\s+TRAINING",
+        r"DAFTAR\s+PESERTA"
+    ]
 
+    top_anchor_idx = -1
     for idx, line in enumerate(lines):
-        if re.search(top_anchor_pattern, line, re.IGNORECASE):
-            top_anchor_idx = idx
+        for pattern in top_anchor_patterns:
+            if re.search(pattern, line, re.IGNORECASE):
+                top_anchor_idx = idx
+                break
+        if top_anchor_idx != -1:
             break
 
-    # Jika ketemu 'FORMULIR PENDAFTARAN', buang semua baris di atasnya
+    # Jika ketemu salah satu Judul Utama, buang SEMUA baris/logo di atasnya
     if top_anchor_idx != -1:
         lines = lines[top_anchor_idx:]
 
     # --- ATURAN 2: POTONG FOOTER DI BAWAH "KETENTUAN PEMBATALAN" / CATATAN NPWP ---
-    # Kita cari titik hentinya (misal setelah catatan NPWP / pengiriman)
     bottom_stop_patterns = [
         r"(?i)mohon\s+dikirimkan\s+softcopy\s+npwp",
         r"(?i)pengiriman\s+formulir,\s+npwp",
         r"(?i)tanda\s+tangan\s+&\s+nama\s+terang"
     ]
-    
+
     bottom_stop_idx = -1
-    # Hanya cari stop pattern jika halaman ini mengandung "KETENTUAN PEMBATALAN"
     has_ketentuan = any(re.search(r"KETENTUAN\s+PEMBATALAN", line, re.IGNORECASE) for line in lines)
-    
+
     if has_ketentuan:
         for idx, line in enumerate(lines):
             for stop_pat in bottom_stop_patterns:
