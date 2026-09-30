@@ -114,46 +114,40 @@ def extract_from_pdf(pdf_bytes: bytes) -> tuple[str, int, str]:
         page_num = i + 1
         native_text = (page.extract_text() or "").strip()
         
-        # Selalu render gambar halaman untuk OCR Tesseract
-        images = convert_from_bytes(
-            pdf_bytes,
-            dpi=300,
-            first_page=page_num,
-            last_page=page_num
-        )
-        
-        ocr_text = ""
-        if images:
-            img = images[0]
-            processed_img = advanced_preprocess_image(img)
-            
-            try:
-                ocr_text = pytesseract.image_to_string(
-                    processed_img, lang="ind+eng", config=custom_config
-                )
-            except pytesseract.TesseractError:
-                ocr_text = pytesseract.image_to_string(
-                    processed_img, lang="eng", config=custom_config
-                )
-            
-            del img, processed_img, images
-            gc.collect()
-
-        # Hybrid Handling: Gabungkan Native Text (jika ada) & OCR Text (hasil scan)
-        if native_text and ocr_text:
-            methods_used.add("pypdf_native+tesseract_ocr")
-            # Hindari duplikasi jika native_text sudah tercakup di ocr_text
-            raw_combined = native_text + "\n" + ocr_text if native_text not in ocr_text else ocr_text
-        elif native_text:
+        # JIKA NATIVE TEXT (Digital PDF > 30 Karakter)
+        if len(native_text) > 30:
+            cleaned_native = advanced_regex_cleaner(native_text)
+            full_text.append(f"--- [HALAMAN {page_num}] ---\n{cleaned_native}")
             methods_used.add("pypdf_native")
-            raw_combined = native_text
         else:
+            # JIKA SCAN / GAMBAR: Full Page OCR (300 DPI) + Regex Cleaning
             methods_used.add("tesseract_ocr")
-            raw_combined = ocr_text
-
-        # Lewatkan ke Regex Cleaner milikmu
-        cleaned_text = advanced_regex_cleaner(raw_combined)
-        full_text.append(f"--- [HALAMAN {page_num}] ---\n{cleaned_text}")
+            
+            images = convert_from_bytes(
+                pdf_bytes,
+                dpi=300,
+                first_page=page_num,
+                last_page=page_num
+            )
+            
+            if images:
+                img = images[0]
+                processed_img = advanced_preprocess_image(img)
+                
+                try:
+                    ocr_text = pytesseract.image_to_string(
+                        processed_img, lang="ind+eng", config=custom_config
+                    )
+                except pytesseract.TesseractError:
+                    ocr_text = pytesseract.image_to_string(
+                        processed_img, lang="eng", config=custom_config
+                    )
+                
+                cleaned_text = advanced_regex_cleaner(ocr_text)
+                full_text.append(f"--- [HALAMAN {page_num}] ---\n{cleaned_text}")
+                
+                del img, processed_img, images
+                gc.collect()
 
     final_method = "+".join(sorted(methods_used))
     return "\n\n".join(full_text), total_pages, final_method
