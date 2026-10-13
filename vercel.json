@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/ocr.js": {
-      "includeFiles": "node_modules/tesseract.js-core/**"
+      "includeFiles": "node_modules/tesseract.js**"
     }
   },
   "rewrites": [

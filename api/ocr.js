@@ -3,7 +3,7 @@ const Busboy = require('busboy');
 
 export const config = {
   api: {
-    bodyParser: false, // Wajib false untuk terima multipart/form-data
+    bodyParser: false, // Wajib false untuk terima multipart/form-data dari Apps Script
   },
 };
 
@@ -34,14 +34,10 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "File buffer kosong" });
         }
 
-        // Inisialisasi Tesseract WASM Worker dengan CDN Fallback untuk Vercel Serverless
-        worker = await createWorker('ind+eng', 1, {
-          workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@v5.1.0/dist/worker.min.js',
-          corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@v5.1.0',
-          logger: m => console.log(m) // Memudahkan tracing di log Vercel
-        });
+        // Inisialisasi Tesseract.js v5 Standar
+        worker = await createWorker('ind+eng');
 
-        // Set Parameter PSM 6 (Single Uniform Block)
+        // Parameter PSM 6 (Single Uniform Block of Text)
         await worker.setParameters({
           tessedit_pageseg_mode: '6',
         });
