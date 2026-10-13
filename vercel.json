@@ -1,5 +1,10 @@
 {
   "version": 2,
+  "functions": {
+    "api/ocr.js": {
+      "includeFiles": "node_modules/tesseract.js-core/**"
+    }
+  },
   "rewrites": [
     {
       "source": "/ocr",
