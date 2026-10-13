@@ -1,3 +1,4 @@
+const path = require('path');
 const { createWorker } = require('tesseract.js');
 const Busboy = require('busboy');
 
@@ -34,8 +35,14 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "File buffer kosong" });
         }
 
-        // Inisialisasi Tesseract.js v5 Standar
-        worker = await createWorker('ind+eng');
+        // Tunjuk langsung path tesseract-core di dalam node_modules Vercel
+        const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
+
+        // Inisialisasi worker dengan menunjuk corePath lokal
+        worker = await createWorker('ind+eng', 1, {
+          corePath: corePath,
+          cachePath: '/tmp', // Izinkan simpan model bahasa sementara di folder /tmp Vercel
+        });
 
         // Parameter PSM 6 (Single Uniform Block of Text)
         await worker.setParameters({
