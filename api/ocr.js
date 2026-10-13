@@ -1,6 +1,7 @@
 const path = require('path');
 const { createWorker } = require('tesseract.js');
 const Busboy = require('busboy');
+const pdfImgConvert = require('pdf-img-convert');
 
 export const config = {
   api: {
@@ -22,8 +23,10 @@ export default async function handler(req, res) {
   try {
     const busboy = Busboy({ headers: req.headers });
     let fileBuffer = [];
+    let filename = "";
 
-    busboy.on('file', (fieldname, file) => {
+    busboy.on('file', (fieldname, file, info) => {
+      filename = (info && info.filename) ? info.filename.toLowerCase() : "";
       file.on('data', (data) => fileBuffer.push(data));
     });
 
@@ -35,28 +38,49 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "File buffer kosong" });
         }
 
-        // Tunjuk langsung path tesseract-core di dalam node_modules Vercel
+        // Tunjuk path tesseract-core di node_modules Vercel
         const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
 
-        // Inisialisasi worker dengan menunjuk corePath lokal
+        // Inisialisasi Tesseract Worker
         worker = await createWorker('ind+eng', 1, {
           corePath: corePath,
-          cachePath: '/tmp', // Izinkan simpan model bahasa sementara di folder /tmp Vercel
+          cachePath: '/tmp',
         });
 
-        // Parameter PSM 6 (Single Uniform Block of Text)
         await worker.setParameters({
           tessedit_pageseg_mode: '6',
         });
 
-        const { data: { text } } = await worker.recognize(buffer);
+        let extractedTexts = [];
+
+        // 🟢 DETEKSI: Jika file adalah PDF, konversi ke Gambar PNG per halaman terlebih dahulu
+        if (filename.endsWith('.pdf') || buffer.slice(0, 4).toString() === '%PDF') {
+          // Konversi PDF ke Array of Image Buffers (PNG) pada DPI 150
+          const outputImages = await pdfImgConvert.convert(buffer, {
+            scale: 1.5 // Setara ~150-200 DPI (Cukup tajam untuk OCR)
+          });
+
+          for (let i = 0; i < outputImages.length; i++) {
+            const { data: { text } } = await worker.recognize(outputImages[i]);
+            if (text && text.trim()) {
+              extractedTexts.push(text.trim());
+            }
+          }
+        } else {
+          // 🟢 JIKA FILE ADALAH GAMBAR (PNG / JPG / WEBP)
+          const { data: { text } } = await worker.recognize(buffer);
+          if (text && text.trim()) {
+            extractedTexts.push(text.trim());
+          }
+        }
+
         await worker.terminate();
 
         return res.status(200).json({
           success: true,
-          total_pages: 1,
+          total_pages: extractedTexts.length,
           extraction_method: "tesseract_wasm_node",
-          text: text ? text.trim() : ""
+          text: extractedTexts.join("\n\n")
         });
 
       } catch (err) {
