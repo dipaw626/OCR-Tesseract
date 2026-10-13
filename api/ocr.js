@@ -2,6 +2,7 @@ const path = require('path');
 const { createWorker } = require('tesseract.js');
 const Busboy = require('busboy');
 const pdfParse = require('pdf-parse');
+const { PDFDocument, PDFName, PDFRawStream } = require('pdf-lib');
 
 export const config = {
   api: {
@@ -54,6 +55,41 @@ function advancedRegexCleaner(text) {
   return cleanedLines.join("\n").trim();
 }
 
+// Extract Embedded Image Buffers dari PDF secara murni pakai pdf-lib (0% C++ Canvas)
+async function extractEmbeddedImagesFromPdf(pdfBuffer) {
+  const images = [];
+  try {
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    const pages = pdfDoc.getPages();
+
+    for (const page of pages) {
+      const { node } = page;
+      const resources = node.Resources();
+      if (!resources) continue;
+
+      const xObjects = resources.get(PDFName.of('XObject'));
+      if (!xObjects) continue;
+
+      const xObjectKeys = xObjects.keys();
+      for (const key of xObjectKeys) {
+        const xObject = xObjects.get(key);
+        if (xObject instanceof PDFRawStream) {
+          const subtype = xObject.dict.get(PDFName.of('Subtype'));
+          if (subtype === PDFName.of('Image')) {
+            const imgBuffer = Buffer.from(xObject.getContents());
+            if (imgBuffer && imgBuffer.length > 5000) { // Saring icon/image kerdil
+              images.push(imgBuffer);
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log("Error extracting embedded images:", e.message);
+  }
+  return images;
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({ status: "Vercel Tesseract WASM Engine Active" });
@@ -87,18 +123,16 @@ export default async function handler(req, res) {
         let fullRawText = "";
         let totalPages = 1;
 
-        // 1. Jika File PDF: Ekstrak teks native via pdf-parse
+        // 1. Ekstrak Teks Native PDF (jika ada)
         if (isPdf) {
           try {
             const pdfData = await pdfParse(buffer);
             fullRawText = pdfData.text || "";
             totalPages = pdfData.numpages || 1;
-          } catch (e) {
-            console.log("Gagal membaca pdf-parse:", e.message);
-          }
+          } catch (e) {}
         }
 
-        // 2. Jika File Gambar PNG/JPG: OCR langsung pakai Tesseract WASM
+        // 2. Jika File Gambar PNG/JPG
         if (!isPdf) {
           const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
           worker = await createWorker('ind+eng', 1, {
@@ -110,15 +144,40 @@ export default async function handler(req, res) {
           const { data: { text } } = await worker.recognize(buffer);
           fullRawText = text;
           await worker.terminate();
+        } 
+        // 3. Jika File PDF & mengandung Gambar Scan: Bongkar Gambar Murni dari PDF lalu OCR
+        else {
+          const embeddedImages = await extractEmbeddedImagesFromPdf(buffer);
+          
+          if (embeddedImages.length > 0) {
+            const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
+            worker = await createWorker('ind+eng', 1, {
+              corePath: corePath,
+              cachePath: '/tmp',
+            });
+            await worker.setParameters({ tessedit_pageseg_mode: '6' });
+
+            for (const imgBuf of embeddedImages) {
+              try {
+                const { data: { text } } = await worker.recognize(imgBuf);
+                if (text && text.trim()) {
+                  fullRawText += "\n\n" + text.trim();
+                }
+              } catch (ocrErr) {
+                console.log("OCR Image Stream skip:", ocrErr.message);
+              }
+            }
+            await worker.terminate();
+          }
         }
 
-        // 3. Bersihkan teks hasil ekstraksi dengan Regex Cleaner
+        // 4. Bersihkan Teks dengan Regex Cleaner
         const cleanedText = advancedRegexCleaner(fullRawText);
 
         return res.status(200).json({
           success: true,
           total_pages: totalPages,
-          extraction_method: isPdf ? "pdf_parse_native" : "tesseract_wasm_image",
+          extraction_method: isPdf ? "pdf_hybrid_embedded_wasm" : "tesseract_wasm_image",
           text: cleanedText
         });
 
