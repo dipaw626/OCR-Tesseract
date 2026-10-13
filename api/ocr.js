@@ -5,9 +5,54 @@ const pdfParse = require('pdf-parse');
 
 export const config = {
   api: {
-    bodyParser: false, // Wajib false untuk terima multipart/form-data
+    bodyParser: false,
   },
 };
+
+// --- REGEX CLEANER PORTINGAN DARI PYTHON RAILWAY ---
+function advancedRegexCleaner(text) {
+  if (!text) return "";
+
+  // 1. DROP HALAMAN KETENTUAN PEMBATALAN
+  if (/KETENTUAN\s+PEMBATALAN/i.test(text)) {
+    return "[HALAMAN KETENTUAN PEMBATALAN DIABAIKAN]";
+  }
+
+  let lines = text.split(/\r?\n/);
+
+  // 2. POTONG LOGO/HEADER DI ATAS FORMULIR PENDAFTARAN
+  let topAnchorIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/FORMULIR\s+PENDAFTARAN/i.test(lines[i])) {
+      topAnchorIdx = i;
+      break;
+    }
+  }
+
+  if (topAnchorIdx !== -1) {
+    lines = lines.slice(topAnchorIdx);
+  }
+
+  // 3. PEMBERSIHAN FOOTER & NOISE
+  const noisePatterns = [
+    /our\s+partner/i,
+    /dipindai\s+dengan\s+camscanner/i,
+    /scanned\s+with\s+camscanner/i,
+    /komplek\s+perum\s+puri\s+gentan/i,
+    /jalan\s+kaliurang/i,
+    /https?:\/\/[^\s]+/i,
+    /mail@expertindo-training\.com/i,
+    /expertindotraining@gmail\.com/i
+  ];
+
+  let cleanedLines = lines.filter(line => {
+    let str = line.trim();
+    if (!str) return false;
+    return !noisePatterns.some(pat => pat.test(str));
+  });
+
+  return cleanedLines.join("\n").trim();
+}
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -38,46 +83,45 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "File buffer kosong" });
         }
 
-        let extractedText = "";
         let isPdf = filename.endsWith('.pdf') || buffer.slice(0, 4).toString() === '%PDF';
+        let fullRawText = "";
+        let totalPages = 1;
 
-        // 1. JIKA FILE ADALAH PDF: Coba ekstrak layer teks langsung pakai pdf-parse (Super Cepat & Bebas Error C++)
+        // Step 1: Ambil Teks Native PDF (jika ada)
         if (isPdf) {
           try {
             const pdfData = await pdfParse(buffer);
-            if (pdfData.text && pdfData.text.trim().length > 20) {
-              return res.status(200).json({
-                success: true,
-                total_pages: pdfData.numpages || 1,
-                extraction_method: "pdf_text_native",
-                text: pdfData.text.trim()
-              });
-            }
-          } catch (pdfErr) {
-            console.log("pdf-parse gagal/PDF berupa gambar scan, melanjut ke Tesseract WASM...");
-          }
+            fullRawText = pdfData.text || "";
+            totalPages = pdfData.numpages || 1;
+          } catch (e) {}
         }
 
-        // 2. JIKA PDF BERUPA SCAN GAMBAR ATAU FILE ADALAH GAMBAR (PNG/JPG): Gunakan Tesseract WASM
-        const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
+        // Step 2: Jika Teks Native Kosong / Kurang Lengkap, Pakai Tesseract WASM
+        if (!isPdf || fullRawText.trim().length < 50) {
+          const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
 
-        worker = await createWorker('ind+eng', 1, {
-          corePath: corePath,
-          cachePath: '/tmp',
-        });
+          worker = await createWorker('ind+eng', 1, {
+            corePath: corePath,
+            cachePath: '/tmp',
+          });
 
-        await worker.setParameters({
-          tessedit_pageseg_mode: '6',
-        });
+          await worker.setParameters({
+            tessedit_pageseg_mode: '6',
+          });
 
-        const { data: { text } } = await worker.recognize(buffer);
-        await worker.terminate();
+          const { data: { text } } = await worker.recognize(buffer);
+          fullRawText += "\n" + text;
+          await worker.terminate();
+        }
+
+        // Step 3: Bersihkan Hasil dengan Regex Cleaner
+        const cleanedText = advancedRegexCleaner(fullRawText);
 
         return res.status(200).json({
           success: true,
-          total_pages: 1,
-          extraction_method: "tesseract_wasm_node",
-          text: text ? text.trim() : ""
+          total_pages: totalPages,
+          extraction_method: "vercel_wasm_hybrid",
+          text: cleanedText
         });
 
       } catch (err) {
