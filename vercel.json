@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/ocr",
+      "destination": "/api/ocr"
+    },
+    {
+      "source": "/",
+      "destination": "/api/ocr"
+    }
+  ]
+}
