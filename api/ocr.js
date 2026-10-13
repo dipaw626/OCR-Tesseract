@@ -1,11 +1,11 @@
 const path = require('path');
 const { createWorker } = require('tesseract.js');
 const Busboy = require('busboy');
-const pdfImgConvert = require('pdf-img-convert');
+const pdfParse = require('pdf-parse');
 
 export const config = {
   api: {
-    bodyParser: false, // Wajib false untuk terima multipart/form-data dari Apps Script
+    bodyParser: false, // Wajib false untuk terima multipart/form-data
   },
 };
 
@@ -38,10 +38,29 @@ export default async function handler(req, res) {
           return res.status(400).json({ success: false, error: "File buffer kosong" });
         }
 
-        // Tunjuk path tesseract-core di node_modules Vercel
+        let extractedText = "";
+        let isPdf = filename.endsWith('.pdf') || buffer.slice(0, 4).toString() === '%PDF';
+
+        // 1. JIKA FILE ADALAH PDF: Coba ekstrak layer teks langsung pakai pdf-parse (Super Cepat & Bebas Error C++)
+        if (isPdf) {
+          try {
+            const pdfData = await pdfParse(buffer);
+            if (pdfData.text && pdfData.text.trim().length > 20) {
+              return res.status(200).json({
+                success: true,
+                total_pages: pdfData.numpages || 1,
+                extraction_method: "pdf_text_native",
+                text: pdfData.text.trim()
+              });
+            }
+          } catch (pdfErr) {
+            console.log("pdf-parse gagal/PDF berupa gambar scan, melanjut ke Tesseract WASM...");
+          }
+        }
+
+        // 2. JIKA PDF BERUPA SCAN GAMBAR ATAU FILE ADALAH GAMBAR (PNG/JPG): Gunakan Tesseract WASM
         const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
 
-        // Inisialisasi Tesseract Worker
         worker = await createWorker('ind+eng', 1, {
           corePath: corePath,
           cachePath: '/tmp',
@@ -51,36 +70,14 @@ export default async function handler(req, res) {
           tessedit_pageseg_mode: '6',
         });
 
-        let extractedTexts = [];
-
-        // 🟢 DETEKSI: Jika file adalah PDF, konversi ke Gambar PNG per halaman terlebih dahulu
-        if (filename.endsWith('.pdf') || buffer.slice(0, 4).toString() === '%PDF') {
-          // Konversi PDF ke Array of Image Buffers (PNG) pada DPI 150
-          const outputImages = await pdfImgConvert.convert(buffer, {
-            scale: 1.5 // Setara ~150-200 DPI (Cukup tajam untuk OCR)
-          });
-
-          for (let i = 0; i < outputImages.length; i++) {
-            const { data: { text } } = await worker.recognize(outputImages[i]);
-            if (text && text.trim()) {
-              extractedTexts.push(text.trim());
-            }
-          }
-        } else {
-          // 🟢 JIKA FILE ADALAH GAMBAR (PNG / JPG / WEBP)
-          const { data: { text } } = await worker.recognize(buffer);
-          if (text && text.trim()) {
-            extractedTexts.push(text.trim());
-          }
-        }
-
+        const { data: { text } } = await worker.recognize(buffer);
         await worker.terminate();
 
         return res.status(200).json({
           success: true,
-          total_pages: extractedTexts.length,
+          total_pages: 1,
           extraction_method: "tesseract_wasm_node",
-          text: extractedTexts.join("\n\n")
+          text: text ? text.trim() : ""
         });
 
       } catch (err) {
