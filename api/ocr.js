@@ -54,6 +54,39 @@ function advancedRegexCleaner(text) {
   return cleanedLines.join("\n").trim();
 }
 
+// Helper untuk mengekstrak gambar dari PDF menggunakan pdfjs-dist
+async function extractImagesFromPdf(pdfBuffer) {
+  const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+  const uint8Array = new Uint8Array(pdfBuffer);
+  const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
+  const pdfDocument = await loadingTask.promise;
+  const imageBuffers = [];
+
+  for (let i = 1; i <= pdfDocument.numPages; i++) {
+    const page = await pdfDocument.getPage(i);
+    const operatorList = await page.getOperatorList();
+    const validObjectTypes = [
+      pdfjsLib.OPS.paintImageXObject,
+      pdfjsLib.OPS.paintInlineImageXObject
+    ];
+
+    for (let j = 0; j < operatorList.fnArray.length; j++) {
+      if (validObjectTypes.includes(operatorList.fnArray[j])) {
+        const imageName = operatorList.argsArray[j][0];
+        try {
+          const image = await page.objs.get(imageName);
+          if (image && image.data) {
+            imageBuffers.push(Buffer.from(image.data));
+          }
+        } catch (e) {
+          // Lanjut jika ada objek gambar yang gagal dirender
+        }
+      }
+    }
+  }
+  return imageBuffers;
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     return res.status(200).json({ status: "Vercel Tesseract WASM Engine Active" });
@@ -87,7 +120,7 @@ export default async function handler(req, res) {
         let fullRawText = "";
         let totalPages = 1;
 
-        // Step 1: Ambil Teks Native PDF (jika ada)
+        // 1. Ekstrak teks native dari PDF
         if (isPdf) {
           try {
             const pdfData = await pdfParse(buffer);
@@ -96,31 +129,46 @@ export default async function handler(req, res) {
           } catch (e) {}
         }
 
-        // Step 2: Jika Teks Native Kosong / Kurang Lengkap, Pakai Tesseract WASM
-        if (!isPdf || fullRawText.trim().length < 50) {
+        // 2. Jika bukan PDF (misal file .PNG/.JPG), langsung lakukan OCR pada buffer
+        if (!isPdf) {
           const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
-
           worker = await createWorker('ind+eng', 1, {
             corePath: corePath,
             cachePath: '/tmp',
           });
-
-          await worker.setParameters({
-            tessedit_pageseg_mode: '6',
-          });
+          await worker.setParameters({ tessedit_pageseg_mode: '6' });
 
           const { data: { text } } = await worker.recognize(buffer);
-          fullRawText += "\n" + text;
+          fullRawText = text;
+          await worker.terminate();
+        } 
+        // 3. Jika PDF dan teks native-nya sedikit/kosong (berupa gambar scan), ekstrak gambar internal PDF lalu OCR
+        else if (fullRawText.trim().length < 50) {
+          const corePath = path.join(process.cwd(), 'node_modules', 'tesseract.js-core');
+          worker = await createWorker('ind+eng', 1, {
+            corePath: corePath,
+            cachePath: '/tmp',
+          });
+          await worker.setParameters({ tessedit_pageseg_mode: '6' });
+
+          const extractedImages = await extractImagesFromPdf(buffer);
+          
+          if (extractedImages.length > 0) {
+            for (const imgBuf of extractedImages) {
+              const { data: { text } } = await worker.recognize(imgBuf);
+              if (text) fullRawText += "\n" + text;
+            }
+          }
           await worker.terminate();
         }
 
-        // Step 3: Bersihkan Hasil dengan Regex Cleaner
+        // 4. Bersihkan hasil dengan Regex Cleaner
         const cleanedText = advancedRegexCleaner(fullRawText);
 
         return res.status(200).json({
           success: true,
           total_pages: totalPages,
-          extraction_method: "vercel_wasm_hybrid",
+          extraction_method: isPdf ? "pdf_hybrid_wasm" : "tesseract_wasm_image",
           text: cleanedText
         });
 
